@@ -33,9 +33,11 @@ The goal is simple:
 
 ---
 
-## Screenshot
+## Screenshots CVEwatch SCAN (Open Source) & CVEwatch WEB (Open Access)
 
 ![CVEwatch GUI (KEV triage & asset scanner)](docs/gui0german.png)
+
+![CVEwatch WEB (Open vulnerability intelligence platform)](docs/web0german.png)
 
 ---
 
