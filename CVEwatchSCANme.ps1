@@ -1416,10 +1416,12 @@ function Normalize-SoftwareName([string]$name) {
 function ConvertTo-VerArray([string]$v) {
     if ([string]::IsNullOrWhiteSpace($v)) { return @() }
     $v = ($v -replace '^[^0-9]*', '')            # z.B. 'v1.2' -> '1.2'
-    $out = New-Object System.Collections.Generic.List[int]
+    # Int64 statt Int32: Teile wie '20240101123456' (Datums-/Build-Stempel) sprengten [int] -> Laufzeitfehler und
+    # stillschweigend verkürzte Version. Noch längere Teile beenden die Zerlegung wie ein Suffix (kein Fehler).
+    $out = New-Object System.Collections.Generic.List[long]
     foreach ($p in ($v -split '[.\-_+ ]')) {
-        $m = [regex]::Match($p, '^\d+')
-        if ($m.Success) { [void]$out.Add([int]$m.Value) } else { break }
+        $m = [regex]::Match($p, '^\d+'); $n = [long]0
+        if ($m.Success -and [long]::TryParse($m.Value, [ref]$n)) { [void]$out.Add($n) } else { break }
     }
     return $out.ToArray()
 }
@@ -1836,7 +1838,7 @@ function Test-ChromiumEraCpe($cpe) {
     }
     return $false
 }
-function Get-VerMajor([string]$v) { $a = @(ConvertTo-VerArray $v); if ($a.Count -gt 0) { return [int]$a[0] } else { return -1 } }
+function Get-VerMajor([string]$v) { $a = @(ConvertTo-VerArray $v); if ($a.Count -gt 0) { return [long]$a[0] } else { return -1 } }
 
 # Aus dem Chrome-Fix (versionEndExcluding) auf Edge schließen. $null = nicht möglich (kein Chrome-Fix in der NVD-Liste).
 function Test-ChromiumDerivedVerdict([string]$Installed, $Cfg) {
