@@ -1416,12 +1416,10 @@ function Normalize-SoftwareName([string]$name) {
 function ConvertTo-VerArray([string]$v) {
     if ([string]::IsNullOrWhiteSpace($v)) { return @() }
     $v = ($v -replace '^[^0-9]*', '')            # z.B. 'v1.2' -> '1.2'
-    # Int64 statt Int32: Teile wie '20240101123456' (Datums-/Build-Stempel) sprengten [int] -> Laufzeitfehler und
-    # stillschweigend verkürzte Version. Noch längere Teile beenden die Zerlegung wie ein Suffix (kein Fehler).
-    $out = New-Object System.Collections.Generic.List[long]
+    $out = New-Object System.Collections.Generic.List[int]
     foreach ($p in ($v -split '[.\-_+ ]')) {
-        $m = [regex]::Match($p, '^\d+'); $n = [long]0
-        if ($m.Success -and [long]::TryParse($m.Value, [ref]$n)) { [void]$out.Add($n) } else { break }
+        $m = [regex]::Match($p, '^\d+')
+        if ($m.Success) { [void]$out.Add([int]$m.Value) } else { break }
     }
     return $out.ToArray()
 }
@@ -1752,16 +1750,6 @@ $script:OsReleases = @(
     @{ Kind='Server'; Build=9600; Key='windows_server_2012';   Name='Windows Server 2012 R2'; From=2000; Eol=$true }
 )
 
-# Schwester-Releases: per Enablement-Package auf demselben Wartungszweig (gleiche Binärdateien, gleiche Revision/UBR je
-# Patchday, z. B. 10.0.26100.9711 / 10.0.26200.9711 / 10.0.26300.9711). Die NVD trägt neuere Releases nicht bei jeder CVE nach;
-# fehlt das eigene Release, werden die Build-Grenzen eines Schwester-Release übernommen (Convert-OsSiblingCpe).
-# Windows Server 2025 (ebenfalls Build 26100) hat eigene Revisionen und gehört bewusst NICHT dazu.
-$script:OsSiblings = @(
-    @{ windows_10_2004 = 19041; windows_10_20h2 = 19042; windows_10_21h1 = 19043; windows_10_21h2 = 19044; windows_10_22h2 = 19045 }
-    @{ windows_11_22h2 = 22621; windows_11_23h2 = 22631 }
-    @{ windows_11_24h2 = 26100; windows_11_25h2 = 26200; windows_11_26h2 = 26300 }
-)
-
 # Build/Typ -> Windows-Release (oder $null, wenn unbekannt). Neuere Windows-11-Releases ohne Tabelleneintrag
 # werden über die Anzeigeversion ("26H1") zugeordnet.
 function Get-OsRelease([int]$Build, [string]$InstallationType, [string]$DisplayVersion) {
@@ -1798,28 +1786,10 @@ function Add-OsHits($Item, $KevIndex, [bool]$AllYears = $false) {
     }
 }
 
-# CPE-Einträge der Schwester-Releases von $OsKey auf den eigenen Build umschreiben (10.0.26200.9445 -> 10.0.26300.9445).
-# Nur Grenzen, deren Build zu einem Schwester-Release gehört, werden umgeschrieben; From = ursprüngliches CPE-Produkt.
-function Convert-OsSiblingCpe([string]$OsKey, $Os) {
-    $grp = $script:OsSiblings | Where-Object { $_.ContainsKey($OsKey) } | Select-Object -First 1
-    if (-not $grp) { return }
-    $own = [string]$grp[$OsKey]
-    $builds = @($grp.Values | ForEach-Object { [string]$_ })
-    foreach ($c in @($Os | Where-Object { $_.Product -ne $OsKey -and $grp.ContainsKey([string]$_.Product) })) {
-        $n = [PSCustomObject]@{ Product = $OsKey; Exact = $c.Exact; VSI = $c.VSI; VSE = $c.VSE; VEI = $c.VEI; VEE = $c.VEE; From = [string]$c.Product }
-        foreach ($k in 'Exact', 'VSI', 'VSE', 'VEI', 'VEE') {
-            $b = [string]$n.$k
-            if ($b -match '^(\d+\.\d+)\.(\d+)(\..*)?$' -and $builds -contains $Matches[2]) { $n.$k = "$($Matches[1]).$own$($Matches[3])" }
-        }
-        $n
-    }
-}
-
 # Verdikt für eine Windows-CVE anhand der NVD-CPE-Liste ($Cfg: Product/Exact/VSI/VSE/VEI/VEE wie Get-NvdConfig).
 # Class: Affected | Patched | NotListed | Unbounded | NoCpe | NoData
-#   NotListed = die NVD führt weder dein Windows-Release noch ein Schwester-Release für diese CVE auf (betrifft andere Releases)
+#   NotListed = die NVD führt dein Windows-Release für diese CVE nicht auf (betrifft andere Releases)
 #   Unbounded = dein Release steht ohne Build-Grenze in der NVD -> nicht entscheidbar
-# Fehlt nur das eigene Release, wird aus den Schwester-Releases abgeleitet (Begründung nennt das).
 function Test-OsCpeVerdict([string]$Build, [string]$OsKey, $Cfg, [bool]$Answered) {
     $r = [PSCustomObject]@{ Class='NoData'; Verdict='Unklar'; Reason=''; Ranges=@(); Matched=@(); Fixed=@() }
     if (-not $Answered) { $r.Reason = L 'Die NVD hat für diese CVE nicht geantwortet (später erneut versuchen).' 'The NVD did not answer for this CVE (try again later).'; return $r }
@@ -1828,12 +1798,6 @@ function Test-OsCpeVerdict([string]$Build, [string]$OsKey, $Cfg, [bool]$Answered
         $r.Class = 'NoCpe'; $r.Reason = L 'Die NVD nennt für diese CVE keine Windows-Produkte mit Build-Angaben (ggf. noch nicht analysiert).' 'The NVD lists no Windows products with build information for this CVE (possibly not analyzed yet).'; return $r
     }
     $mine = @($os | Where-Object { $_.Product -eq $OsKey })
-    $derived = ''
-    if ($mine.Count -eq 0) {
-        # "Nicht gelistet" ist bei neueren Releases oft nur eine Lücke in der NVD: Treffer fielen sonst still aus dem Bericht.
-        $mine = @(Convert-OsSiblingCpe $OsKey $os)
-        $derived = (@($mine | ForEach-Object { $_.From } | Select-Object -Unique) -join ', ')
-    }
     if ($mine.Count -eq 0) {
         $r.Class = 'NotListed'; $r.Verdict = 'Vermutlich gepatcht'
         $r.Reason = L "Die NVD führt dein Windows-Release ($OsKey) für diese CVE nicht als betroffen auf." "The NVD does not list your Windows release ($OsKey) as affected by this CVE."; return $r
@@ -1856,11 +1820,6 @@ function Test-OsCpeVerdict([string]$Build, [string]$OsKey, $Cfg, [bool]$Answered
     if ($inRange)       { $r.Class = 'Affected';  $r.Verdict = 'Betroffen' }
     elseif ($unbounded) { $r.Class = 'Unbounded'; $r.Verdict = 'Unklar'; $r.Reason = L 'Für dein Windows-Release nennt die NVD bei dieser CVE keine Build-Grenze (häufig bei älteren Einträgen); ob dein Build den Fix enthält, lässt sich so nicht sagen.' 'For your Windows release the NVD gives no build boundary for this CVE (common for older entries); whether your build contains the fix cannot be determined this way.' }
     else                { $r.Class = 'Patched';   $r.Verdict = 'Vermutlich gepatcht'; $r.Reason = L 'Dein Build liegt oberhalb aller von der NVD genannten verwundbaren Build-Bereiche.' 'Your build is above all vulnerable build ranges listed by the NVD.' }
-    if ($derived) {
-        $dDe = "Abgeleitet: Die NVD führt dein Windows-Release ($OsKey) für diese CVE nicht, wohl aber $derived aus demselben Wartungszweig (gleiche Revision je Patchday); deren Build-Grenzen wurden auf deinen Build übertragen."
-        $dEn = "Derived: The NVD does not list your Windows release ($OsKey) for this CVE, but lists $derived from the same servicing branch (same revision per Patch Tuesday); their build boundaries were applied to your build."
-        $r.Reason = if ($r.Reason) { L "$dDe $($r.Reason.de)" "$dEn $($r.Reason.en)" } else { L $dDe $dEn }
-    }
     return $r
 }
 
@@ -1877,7 +1836,7 @@ function Test-ChromiumEraCpe($cpe) {
     }
     return $false
 }
-function Get-VerMajor([string]$v) { $a = @(ConvertTo-VerArray $v); if ($a.Count -gt 0) { return [long]$a[0] } else { return -1 } }
+function Get-VerMajor([string]$v) { $a = @(ConvertTo-VerArray $v); if ($a.Count -gt 0) { return [int]$a[0] } else { return -1 } }
 
 # Aus dem Chrome-Fix (versionEndExcluding) auf Edge schließen. $null = nicht möglich (kein Chrome-Fix in der NVD-Liste).
 function Test-ChromiumDerivedVerdict([string]$Installed, $Cfg) {
