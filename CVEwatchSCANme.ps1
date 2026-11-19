@@ -1,6 +1,6 @@
 ﻿<#
 ================================================================================
-  CVEwatch - Asset Scan + KEV Matcher  (Version 4.0.1)
+  CVEwatch - Asset Scan + KEV Matcher  (Version 4.1)
   ------------------------------------------------------------------------------
   ENGLISH SUMMARY
     Local, agentless vulnerability triage for a single Windows device:
@@ -10,8 +10,9 @@
       - checks per hit via the NIST NVD whether the installed version is affected (incl. Windows build)
       - writes an HTML report (German + English, switchable) plus CSV / JSON / LOG / summary.json
     Privacy: everything runs locally, no inventory data is transmitted. By default only the KEV catalog
-    and NVD CVE details (CVE identifiers only) are downloaded. Public IP, latency and speed test are
-    opt-in (-PublicIP, -Latency, -SpeedTest, -External).
+    and the NVD data for all KEV CVEs (same download for every device, no device-specific data) are
+    downloaded; only CVEs the NVD does not mark as KEV yet are requested individually by CVE identifier.
+    Public IP, latency and speed test are opt-in (-PublicIP, -Latency, -SpeedTest, -External).
     Run:  powershell -ExecutionPolicy Bypass -File .\CVEwatchSCANme.ps1 -Gui
           powershell -ExecutionPolicy Bypass -File .\CVEwatchSCANme.ps1 -Lang de     (console, German)
     Language: -Lang en (default) or -Lang de; the window has a language button, the report a switch.
@@ -57,7 +58,8 @@
     - Datenschutz: Alles läuft lokal. Es werden keine Inventardaten übertragen. Standardmäßig
       gehen nur zwei Abrufe nach außen (die Gegenstelle sieht dabei deine IP-Adresse):
         -> Abruf des CISA-KEV-Katalogs
-        -> Abruf der NVD-CVE-Details pro Treffer (nur CVE-Kennungen)
+        -> Abruf der NVD-Daten zu allen KEV-CVEs (gleicher Abruf für jedes Gerät, nichts Gerätespezifisches);
+           nur CVEs, die die NVD noch nicht als KEV führt, werden einzeln per CVE-Kennung abgefragt
       Weitere Verbindungen sind OPT-IN (Standard: aus), jeweils einzeln schaltbar:
         -> -PublicIP  : Ermittlung der öffentlichen IP (api.ipify.org / ifconfig.me, Drittanbieter)
         -> -Latency   : Ping an www.google.de / www.devicentra.de
@@ -76,6 +78,19 @@
   Für Rollouts: -AllowNonAdmin = still weiterlaufen, -RequireAdmin = sofort Exit-Code 5.
   Als SYSTEM (Intune/SCCM): Ablage unter %ProgramData%\CVEwatch\assets, -NoOpen setzen. Aus einer
   32-Bit-PowerShell startet sich das Skript selbst in der 64-Bit-PowerShell neu (sonst fehlen 64-Bit-Programme).
+
+  Änderungen 4.1: (Beitrag: Ariazonaa, PR #1):
+    - NVD-Sammelabruf: Die NVD-Daten zu allen KEV-CVEs werden gesammelt geholt (cves/2.0?hasKev, wenige Seiten),
+      danach nur noch Änderungen seit dem letzten Lauf (lastModStartDate). Alle 30 Tage bzw. nach mehr als
+      119 Tagen Pause wird komplett neu geladen. Ohne API-Key entfällt damit die lange Wartezeit pro CVE, das
+      150er-Limit greift nur noch für Einzelabfragen (CVEs, die die NVD noch nicht als KEV markiert hat).
+      Datenschutz: Der Sammelabruf ist für jedes Gerät gleich und verrät nicht, welche Software installiert ist.
+    - Nachgetragene Windows-Releases und korrigierte Build-Grenzen kommen über den Änderungsabgleich sofort an,
+      statt bis zu 30 Tage im Cache zu hängen.
+    - GUI: Fortschrittsbalken und Statuszeile laufen beim NVD-Sammelabruf mit; Versionsnummer im Fenster und im Fenstertitel.
+    - NVD-Cache kompakter gespeichert (Bereiche als Text), damit Laden/Speichern auch in PowerShell 5.1 schnell bleibt.
+      Neuer Dateiname nvd_cache_v2.json (ältere Versionen würden das kompakte Format sonst als "keine NVD-Daten"
+      lesen); die alte nvd_cpe_cache.json wird beim ersten Lauf übernommen und danach nicht mehr verändert.
 
   Änderungen 4.0.1 (Beitrag: Ariazonaa, PR #1):
     - Windows-Build-Abgleich: Fehlt das eigene Windows-Release bei einer CVE in der NVD, werden die Build-Grenzen
@@ -128,7 +143,7 @@ if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProces
 }
 
 $ProgressPreference     = 'SilentlyContinue'   # unterdrückt langsame Fortschrittsbalken
-$ScriptVersion          = '4.0.1'               # EINZIGE Stelle für die Versionsnummer (Report-Fußzeile, summary.json)
+$ScriptVersion          = '4.1'                 # EINZIGE Stelle für die Versionsnummer (Report-Fußzeile, summary.json)
 
 # ---------------------------------------------------------------------------
 # SPRACHE / LANGUAGE
@@ -227,16 +242,16 @@ Der Fortschritt wird links live angezeigt; der Scan läuft als eigener Prozess, 
 
     AddSec 'Optionen und ihre Parameter' `
 '• KEV-Abgleich: aktiv ausgenutzte Lücken finden (Standard: an). Aus = nur Geräte-Inventar und Sicherheits-Posture, kein Schwachstellen-Abgleich. Kommandozeile: -NoKev
-• + NVD-Versionsabgleich (Version betroffen?) (Standard: an). Fragt pro Treffer die NVD, ob deine installierte Version im verwundbaren Bereich liegt, und holt den CVSS-Schweregrad. Aus = nur "Produkt ist in KEV", ohne Versionsprüfung. Kommandozeile: -NoVersionCheck
+• + NVD-Versionsabgleich (Version betroffen?) (Standard: an). Prüft anhand der NVD, ob deine installierte Version im verwundbaren Bereich liegt, und holt den CVSS-Schweregrad. Die NVD-Daten zu allen KEV-CVEs werden gesammelt geladen (wenige Anfragen), danach nur noch Änderungen. Aus = nur "Produkt ist in KEV", ohne Versionsprüfung. Kommandozeile: -NoVersionCheck
 • + Windows-Build prüfen (Standard: an, nur zusammen mit dem NVD-Versionsabgleich): Vergleicht deinen exakten Windows-Build mit den KEV-Einträgen zu Windows selbst und sagt, welche Lücken dein Build noch hat und ab welchem Build sie behoben sind. Kostet zusätzliche NVD-Abfragen; ohne API-Key dauert der erste Lauf deutlich länger, danach hilft der Cache. Kommandozeile: -NoOsCheck (zusätzlich -OsAllYears: auch Einträge, die älter als dein Windows-Release sind)
 • NVD API-Key (optional): kostenlos bei nvd.nist.gov. Hebt das Limit von 5 auf 50 Anfragen je 30 Sekunden - der Versionsabgleich wird deutlich schneller und zuverlässiger. Kommandozeile: -NvdApiKey oder die Umgebungsvariable CVEWATCH_NVD_API_KEY
-• NVD-Limit (Standard: an, 150 neue Abfragen pro Lauf): Begrenzt, wie viele CVEs ein Lauf neu bei der NVD abfragt; bereits gespeicherte zählen nicht. Reicht das Limit nicht, sagt der Report oben deutlich "Scan unvollständig", und du musst erneut scannen: Der zweite Lauf holt die fehlenden CVEs nach. Ohne Limit (Haken entfernen) wird alles in einem Lauf geprüft, ohne API-Key dauert das lange. Kommandozeile: -NvdMaxCves ZAHL oder -NoNvdLimit
+• NVD-Limit (Standard: an, 150 neue Abfragen pro Lauf): Greift nur noch für Einzelabfragen - also CVEs, die der Sammelabruf nicht abdeckt (z. B. ganz neu im KEV, von der NVD noch nicht markiert) oder wenn der Sammelabruf fehlschlägt. Begrenzt, wie viele CVEs ein Lauf einzeln neu bei der NVD abfragt; bereits gespeicherte zählen nicht. Reicht das Limit nicht, sagt der Report oben deutlich "Scan unvollständig", und du musst erneut scannen: Der zweite Lauf holt die fehlenden CVEs nach. Ohne Limit (Haken entfernen) wird alles in einem Lauf geprüft, ohne API-Key dauert das lange. Kommandozeile: -NvdMaxCves ZAHL oder -NoNvdLimit
 • Cache verwenden statt frisch laden (Standard: aus). Siehe "Aktualität & Cache". Kommandozeile: -UseCache
 • Verbindungen nach außen (alle standardmäßig AUS, einzeln schaltbar): Öffentliche IP ermitteln (-PublicIP), Internet-Latenz messen (-Latency), Download-Speedtest (-SpeedTest); alle drei zusammen: -External. Details unter "Datenschutz & Quellen".
 • Sprache: Der Knopf "Deutsch" / "English" oben schaltet das Fenster und die Konsolenausgabe des Scans um. Der HTML-Report enthält immer beide Sprachen und hat einen eigenen Umschalter. Kommandozeile: -Lang de oder -Lang en (Standard: en)'
 
     AddSec 'Aktualität & Cache' `
-'Standard ist bewusst: KEV UND NVD werden bei JEDEM Lauf frisch geladen - denn jederzeit kann eine neue, gerade ausgenutzte CVE dazukommen. "Cache verwenden" ist die schnelle bzw. offline-Option: KEV und NVD-Angaben kommen aus dem lokalen Zwischenspeicher (NVD-Einträge, die älter als 30 Tage sind, werden trotzdem neu geholt). Der Preis: Neu aufgenommene Schwachstellen fehlen (NVD-Angaben zu CVEs, die schon länger als 120 Tage im KEV stehen, dürfen auch ohne diese Option aus dem Cache kommen, damit Folgeläufe schnell sind; im Skriptkopf einstellbar), und NVD-Angaben, die noch ohne Schweregrad (CVSS) gespeichert wurden, bekommen ihn erst nach einem Lauf ohne Cache. Ohne diese Option dient der Cache nur als Ausfall-Netz, falls CISA/NVD kurz nicht erreichbar sind. Die Cache-Dateien (kev_catalog.json, nvd_cpe_cache.json) liegen unter %USERPROFILE%\CVEwatch\assets und können jederzeit gelöscht werden.'
+'Standard ist bewusst: KEV UND NVD werden bei JEDEM Lauf frisch geladen - denn jederzeit kann eine neue, gerade ausgenutzte CVE dazukommen. "Cache verwenden" ist die schnelle bzw. offline-Option: KEV und NVD-Angaben kommen aus dem lokalen Zwischenspeicher (NVD-Einträge, die älter als 30 Tage sind, werden trotzdem neu geholt). Der Preis: Neu aufgenommene Schwachstellen fehlen (NVD-Angaben zu CVEs, die schon länger als 120 Tage im KEV stehen, dürfen auch ohne diese Option aus dem Cache kommen, damit Folgeläufe schnell sind; im Skriptkopf einstellbar), und NVD-Angaben, die noch ohne Schweregrad (CVSS) gespeichert wurden, bekommen ihn erst nach einem Lauf ohne Cache. Ohne diese Option dient der Cache nur als Ausfall-Netz, falls CISA/NVD kurz nicht erreichbar sind. NVD-Sammelabruf: Der erste Lauf lädt die NVD-Daten aller KEV-CVEs, jeder weitere nur die Änderungen seit dem letzten Lauf; alle 30 Tage (oder nach mehr als 119 Tagen Pause) wird komplett neu geladen (Stand in nvd_kev_sync.json). Die Cache-Dateien (kev_catalog.json, nvd_cache_v2.json, nvd_kev_sync.json) liegen unter %USERPROFILE%\CVEwatch\assets und können jederzeit gelöscht werden.'
 
     AddSec 'Kommandozeile & Parameter' `
 ('Für Fortgeschrittene und zur Automatisierung. Die Oberfläche ist nur eine Bedienhilfe: Sie startet dasselbe Skript als eigenen Prozess mit passenden Parametern. Wer lieber die Konsole nutzt oder den Scan automatisieren will (geplanter Task, Rollout), ruft das Skript direkt auf - im Ordner des Skripts, in PowerShell:
@@ -304,7 +319,7 @@ Farben: rot = betroffen/überfällig, orange = fällig bald/Ransomware, grün = 
 'Jeder Lauf erzeugt mehrere Dateien unter %USERPROFILE%\CVEwatch\assets\<Computername> (als SYSTEM, z. B. per Intune: %ProgramData%\CVEwatch\assets\<Computername>) - vier davon sind unten im Fenster per Knopf zu öffnen (immer der neueste, nur klickbar wenn vorhanden): Report (HTML, lesbar), Inventar (CSV), Treffer (JSON, maschinenlesbar), Log (Host-Zusammenfassung); dazu eine summary.json mit den Management-Befunden nach Schweregrad. Das Treffer-JSON enthält je CVE auch die Beschreibung, den CVSS-Wert, die betroffenen Versionsbereiche, den Fix-Hinweis und die Begründung des Verdikts - praktisch für eigene Auswertungen. Die Schalter für Automatisierung stehen unter "Kommandozeile & Parameter"; die Konsole blockiert nie auf eine Eingabe. Das Skript gibt eine CVEWATCH_SUMMARY-Zeile (inkl. admin=0/1) und einen Exit-Code aus: 0 = sauber, 2 = KEV-Treffer mit offener Version (nicht als gepatcht eingestuft), 3 = überfällige Frist, 4 = Version betroffen (5 = Administratorrechte fehlen bei -RequireAdmin). Ideal für einen geplanten Task, der nur meldet, wenn es brennt.'
 
     AddSec 'Datenschutz & Quellen' `
-'Alles läuft lokal; es werden keine Inventardaten übertragen. Standardmäßig gehen nur zwei Abrufe nach außen: der KEV-Katalog (CISA, cisa.gov) und pro Treffer die CVE-Details (NIST NVD, nvd.nist.gov) - dabei werden nur CVE-Kennungen übertragen; CISA und NIST sehen deine IP-Adresse. Öffentliche IP, Latenzmessung und Speedtest sind Opt-in (Standard: aus): Die IP-Abfrage geht an api.ipify.org bzw. ifconfig.me, die Latenzmessung pingt www.google.de bzw. www.devicentra.de, der Speedtest lädt 10 MB von crusadersoft.com (es wird nichts hochgeladen); die jeweilige Gegenstelle sieht dabei deine IP-Adresse. Keine Telemetrie, keine Weitergabe deiner Softwareliste. Bericht und Exporte bleiben auf diesem Rechner und enthalten personenbezogene Daten (z. B. Hostname, Benutzerkonten, IP/MAC): nur an Berechtigte weitergeben. Datenschutzerklärung: https://crusadersoft.com/#datenschutz
+'Alles läuft lokal; es werden keine Inventardaten übertragen. Standardmäßig gehen nur zwei Abrufe nach außen: der KEV-Katalog (CISA, cisa.gov) und die NVD-Daten zu allen KEV-CVEs (NIST NVD, nvd.nist.gov) - dieser Abruf ist für jedes Gerät gleich und verrät nicht, welche Software installiert ist; nur CVEs, die die NVD noch nicht als KEV führt, werden einzeln per CVE-Kennung abgefragt. CISA und NIST sehen deine IP-Adresse. Öffentliche IP, Latenzmessung und Speedtest sind Opt-in (Standard: aus): Die IP-Abfrage geht an api.ipify.org bzw. ifconfig.me, die Latenzmessung pingt www.google.de bzw. www.devicentra.de, der Speedtest lädt 10 MB von crusadersoft.com (es wird nichts hochgeladen); die jeweilige Gegenstelle sieht dabei deine IP-Adresse. Keine Telemetrie, keine Weitergabe deiner Softwareliste. Bericht und Exporte bleiben auf diesem Rechner und enthalten personenbezogene Daten (z. B. Hostname, Benutzerkonten, IP/MAC): nur an Berechtigte weitergeben. Datenschutzerklärung: https://crusadersoft.com/#datenschutz
 Dieses Produkt nutzt Daten der NVD-API, ist aber von der NVD weder empfohlen noch zertifiziert (This product uses data from the NVD API but is not endorsed or certified by the NVD).'
 
     AddSec 'Enterprise' `
@@ -329,16 +344,16 @@ Progress is shown live on the left; the scan runs as a separate process, so the 
 
     AddSec 'Options and their parameters' `
 '• KEV matching: find actively exploited vulnerabilities (default: on). Off = device inventory and security posture only, no vulnerability matching. Command line: -NoKev
-• + NVD version check (is my version affected?) (default: on). Asks the NVD for each hit whether your installed version is in the vulnerable range and fetches the CVSS severity. Off = only "product is listed in KEV", without version check. Command line: -NoVersionCheck
+• + NVD version check (is my version affected?) (default: on). Checks against the NVD whether your installed version is in the vulnerable range and fetches the CVSS severity. The NVD data of all KEV CVEs is downloaded in bulk (few requests), afterwards only changes. Off = only "product is listed in KEV", without version check. Command line: -NoVersionCheck
 • + Check Windows build (default: on, only together with the NVD version check): Compares your exact Windows build with the KEV entries for Windows itself and tells you which vulnerabilities your build still has and from which build they are fixed. Costs additional NVD requests; without an API key the first run takes much longer, afterwards the cache helps. Command line: -NoOsCheck (additionally -OsAllYears: also entries older than your Windows release)
 • NVD API key (optional): free at nvd.nist.gov. Raises the limit from 5 to 50 requests per 30 seconds - the version check becomes much faster and more reliable. Command line: -NvdApiKey or the environment variable CVEWATCH_NVD_API_KEY
-• NVD limit (default: on, 150 new requests per run): Limits how many CVEs a run newly queries from the NVD; cached ones do not count. If the limit is not enough, the report clearly says "Scan incomplete" at the top and you need to scan again: the second run fetches the missing CVEs. Without a limit (untick the box) everything is checked in one run; without an API key that takes a long time. Command line: -NvdMaxCves NUMBER or -NoNvdLimit
+• NVD limit (default: on, 150 new requests per run): Only applies to individual requests - CVEs the bulk download does not cover (e.g. brand new in KEV, not yet marked by the NVD) or when the bulk download fails. Limits how many CVEs a run individually queries from the NVD; cached ones do not count. If the limit is not enough, the report clearly says "Scan incomplete" at the top and you need to scan again: the second run fetches the missing CVEs. Without a limit (untick the box) everything is checked in one run; without an API key that takes a long time. Command line: -NvdMaxCves NUMBER or -NoNvdLimit
 • Use cache instead of downloading (default: off). See "Freshness & cache". Command line: -UseCache
 • Outbound connections (all OFF by default, individually selectable): determine public IP (-PublicIP), measure internet latency (-Latency), download speed test (-SpeedTest); all three together: -External. Details under "Privacy & sources".
 • Language: the "Deutsch" / "English" button at the top switches the window and the console output of the scan. The HTML report always contains both languages and has its own switch. Command line: -Lang en or -Lang de (default: en)'
 
     AddSec 'Freshness & cache' `
-'The default is deliberate: KEV AND NVD data are downloaded fresh on EVERY run - a new, actively exploited CVE can be added at any time. "Use cache" is the fast or offline option: KEV and NVD data come from the local cache (NVD entries older than 30 days are still fetched again). The price: newly added vulnerabilities are missing (NVD data for CVEs that have been in KEV for more than 120 days may come from the cache even without this option, so that follow-up runs are fast; configurable at the top of the script), and NVD data stored without a severity (CVSS) only gets one after a run without cache. Without this option the cache only serves as a safety net in case CISA/NVD are briefly unreachable. The cache files (kev_catalog.json, nvd_cpe_cache.json) are located under %USERPROFILE%\CVEwatch\assets and can be deleted at any time.'
+'The default is deliberate: KEV AND NVD data are downloaded fresh on EVERY run - a new, actively exploited CVE can be added at any time. "Use cache" is the fast or offline option: KEV and NVD data come from the local cache (NVD entries older than 30 days are still fetched again). The price: newly added vulnerabilities are missing (NVD data for CVEs that have been in KEV for more than 120 days may come from the cache even without this option, so that follow-up runs are fast; configurable at the top of the script), and NVD data stored without a severity (CVSS) only gets one after a run without cache. Without this option the cache only serves as a safety net in case CISA/NVD are briefly unreachable. NVD bulk sync: the first run downloads the NVD data of all KEV CVEs, every further run only the changes since the last run; every 30 days (or after a break of more than 119 days) everything is reloaded (state in nvd_kev_sync.json). The cache files (kev_catalog.json, nvd_cache_v2.json, nvd_kev_sync.json) are located under %USERPROFILE%\CVEwatch\assets and can be deleted at any time.'
 
     AddSec 'Command line & parameters' `
 ('For advanced users and automation. The window is only a front end: it starts the same script as a separate process with matching parameters. If you prefer the console or want to automate the scan (scheduled task, rollout), call the script directly - in the script folder, in PowerShell:
@@ -406,7 +421,7 @@ Colors: red = affected/overdue, orange = due soon/ransomware, green = probably p
 'Each run creates several files under %USERPROFILE%\CVEwatch\assets\<computer name> (as SYSTEM, e.g. via Intune: %ProgramData%\CVEwatch\assets\<computer name>) - four of them can be opened with the buttons at the bottom of the window (always the newest, only clickable if present): report (HTML, readable), inventory (CSV), hits (JSON, machine-readable), log (host summary); plus a summary.json with the management findings by severity. The hits JSON also contains, per CVE, the description, the CVSS score, the affected version ranges, the fix hint and the reason for the verdict - handy for your own evaluations. The switches for automation are listed under "Command line & parameters"; the console never blocks waiting for input. The script outputs a CVEWATCH_SUMMARY line (incl. admin=0/1) and an exit code: 0 = clean, 2 = KEV hit with open version (not rated as patched), 3 = overdue due date, 4 = version affected (5 = administrator rights missing with -RequireAdmin). Ideal for a scheduled task that only reports when something is on fire.'
 
     AddSec 'Privacy & sources' `
-'Everything runs locally; no inventory data is transmitted. By default only two requests go out: the KEV catalog (CISA, cisa.gov) and, per hit, the CVE details (NIST NVD, nvd.nist.gov) - only CVE identifiers are transmitted; CISA and NIST see your IP address. Public IP, latency measurement and speed test are opt-in (default: off): the IP lookup goes to api.ipify.org or ifconfig.me, the latency measurement pings www.google.de or www.devicentra.de, the speed test downloads 10 MB from crusadersoft.com (nothing is uploaded); the respective server sees your IP address. No telemetry, no sharing of your software list. Report and exports stay on this computer and contain personal data (e.g. host name, user accounts, IP/MAC): share only with authorized persons. Privacy policy: https://crusadersoft.com/#datenschutz
+'Everything runs locally; no inventory data is transmitted. By default only two requests go out: the KEV catalog (CISA, cisa.gov) and the NVD data of all KEV CVEs (NIST NVD, nvd.nist.gov) - this download is the same for every device and does not reveal which software is installed; only CVEs the NVD does not mark as KEV yet are requested individually by CVE identifier. CISA and NIST see your IP address. Public IP, latency measurement and speed test are opt-in (default: off): the IP lookup goes to api.ipify.org or ifconfig.me, the latency measurement pings www.google.de or www.devicentra.de, the speed test downloads 10 MB from crusadersoft.com (nothing is uploaded); the respective server sees your IP address. No telemetry, no sharing of your software list. Report and exports stay on this computer and contain personal data (e.g. host name, user accounts, IP/MAC): share only with authorized persons. Privacy policy: https://crusadersoft.com/#datenschutz
 This product uses data from the NVD API but is not endorsed or certified by the NVD.'
 
     AddSec 'Enterprise' `
@@ -581,7 +596,7 @@ This product uses data from the NVD API but is not endorsed or certified by the 
 
     for ($i = 0; $i -lt $secs.Count; $i++) { Render-Section $secs[$i] $i }
     # Parameter, Dateinamen und Pfade im Fließtext als Code hervorheben
-    $rxTok = [regex]'(?<![\w-])(?:-[A-Z][A-Za-z]{2,}|CVEWATCH_NVD_API_KEY|CVEWATCH_SUMMARY|%(?:USERPROFILE|ProgramData)%\\[\w\\<>%.\-]+|(?:kev_catalog|nvd_cpe_cache|summary)\.json|\w+\.ps1)'
+    $rxTok = [regex]'(?<![\w-])(?:-[A-Z][A-Za-z]{2,}|CVEWATCH_NVD_API_KEY|CVEWATCH_SUMMARY|%(?:USERPROFILE|ProgramData)%\\[\w\\<>%.\-]+|(?:kev_catalog|nvd_cache_v2|nvd_kev_sync|summary)\.json|\w+\.ps1)'
     foreach ($m in $rxTok.Matches($rtb.Text)) { $rtb.Select($m.Index, $m.Length); $rtb.SelectionFont = $fMono; $rtb.SelectionColor = $cCode }
     $rtb.Select(0, 0)
 
@@ -749,7 +764,7 @@ function Show-CVEwatchGui {
 
     # ---------------------------------------------------------------- Fenster
     $form = New-Object System.Windows.Forms.Form
-    $form.Text=$(if ($isAdminGui) { 'CVEwatch - Asset Scanner' } else { (G 'CVEwatch - Asset Scanner (kein Administrator - eingeschränkt)' 'CVEwatch - Asset Scanner (not administrator - limited)') })
+    $form.Text=$(if ($isAdminGui) { "CVEwatch - Asset Scanner v$ScriptVersion" } else { (G "CVEwatch - Asset Scanner v$ScriptVersion (kein Administrator - eingeschränkt)" "CVEwatch - Asset Scanner v$ScriptVersion (not administrator - limited)") })
     $form.ClientSize=New-Object System.Drawing.Size(780,854)
     $form.StartPosition='CenterScreen'; $form.BackColor=$cBg; $form.ForeColor=$cText
     $form.Font=New-Object System.Drawing.Font('Segoe UI',9)
@@ -761,6 +776,11 @@ function Show-CVEwatchGui {
     $title=New-Object System.Windows.Forms.Label
     $title.Text='CVEwatch Asset Scan'; $title.Font=New-Object System.Drawing.Font('Segoe UI',20,[System.Drawing.FontStyle]::Bold)
     $title.ForeColor=$cText; $title.Location='22,10'; $title.AutoSize=$true; $form.Controls.Add($title)
+    $lblVer=New-Object System.Windows.Forms.Label
+    $lblVer.Text="v$ScriptVersion"; $lblVer.ForeColor=$cMut; $lblVer.AutoSize=$true
+    $lblVer.Font=New-Object System.Drawing.Font('Segoe UI',10)
+    $lblVer.Location=New-Object System.Drawing.Point((22 + $title.PreferredWidth + 2), 24)
+    $form.Controls.Add($lblVer)
 
     $lblSubT=New-Object System.Windows.Forms.Label
     $lblSubT.Text=(G 'Inventar, KEV- und NVD-Abgleich für Windows' 'Inventory, KEV and NVD check for Windows'); $lblSubT.ForeColor=$cMut; $lblSubT.AutoSize=$true; $lblSubT.Location='26,50'
@@ -811,7 +831,7 @@ function Show-CVEwatchGui {
         $logoRatio = $logoImg.Height / $logoImg.Width
 
         # Klein: ganzer Schriftzug, rechtsbündig direkt links neben dem Hilfe-Knopf, vertikal auf Knopfmitte
-        $freeW  = $btnLang.Left - 10 - ($title.Left + $title.PreferredWidth + 12)     # Platz zwischen Titel und Knopf
+        $freeW  = $btnLang.Left - 10 - ($lblVer.Left + $lblVer.PreferredWidth + 12)   # Platz zwischen Titel/Version und Knopf
         $smallW = [int][Math]::Max(70, [Math]::Min(140, $freeW))
         $smallH = [int][Math]::Max(1, [Math]::Round($smallW * $logoRatio))
         $picLogo = New-Object System.Windows.Forms.PictureBox
@@ -992,8 +1012,8 @@ function Show-CVEwatchGui {
     $tt=New-Object System.Windows.Forms.ToolTip; $tt.AutoPopDelay=25000; $tt.InitialDelay=400; $tt.ReshowDelay=200
     $tt.SetToolTip($cbKev,(G 'Gleicht die installierte Software mit dem CISA-KEV-Katalog ab (Schwachstellen, die nachweislich aktiv ausgenutzt werden). Dafür wird der Katalog von cisa.gov geladen.' 'Matches the installed software against the CISA KEV catalog (vulnerabilities that are known to be actively exploited). The catalog is downloaded from cisa.gov for this.'))
     $tt.SetToolTip($cbLimit,(G 'Mit Limit werden pro Lauf höchstens 150 NEUE CVEs bei der NVD abgefragt (bereits gespeicherte zählen nicht). Fehlende CVEs holt der nächste Scan nach; der Report sagt dann deutlich "Scan unvollständig". Ohne Limit (Haken entfernen) werden alle in einem Lauf geprüft, ohne API-Key kann das viele Minuten dauern.' 'With the limit, at most 150 NEW CVEs are queried from the NVD per run (cached ones do not count). The next scan fetches the missing CVEs; the report then clearly says "Scan incomplete". Without the limit (untick) all are checked in one run; without an API key this can take many minutes.'))
-    $tt.SetToolTip($cbOs,(G 'Vergleicht deinen exakten Windows-Build mit den KEV-Einträgen zu Windows selbst (die NVD nennt je Release die Build-Nummer, ab der eine Lücke behoben ist). Dafür werden zusätzliche CVE-Kennungen bei der NVD abgefragt; ohne API-Key dauert der erste Lauf deutlich länger. Es werden nur CVE-Kennungen übertragen, keine Inventardaten.' 'Compares your exact Windows build with the KEV entries for Windows itself (for each release the NVD names the build number in which a vulnerability is fixed). This queries additional CVE identifiers from the NVD; without an API key the first run takes much longer. Only CVE identifiers are transmitted, no inventory data.'))
-    $tt.SetToolTip($cbVer,(G 'Fragt pro Treffer die NVD (nvd.nist.gov) ab, ob die installierte Version im verwundbaren Bereich liegt. Es werden nur CVE-Kennungen übertragen, keine Inventardaten.' 'Asks the NVD (nvd.nist.gov) for each hit whether the installed version is in the vulnerable range. Only CVE identifiers are transmitted, no inventory data.'))
+    $tt.SetToolTip($cbOs,(G 'Vergleicht deinen exakten Windows-Build mit den KEV-Einträgen zu Windows selbst (die NVD nennt je Release die Build-Nummer, ab der eine Lücke behoben ist). Die Daten kommen aus dem NVD-Sammelabruf; es werden keine Inventardaten übertragen.' 'Compares your exact Windows build with the KEV entries for Windows itself (for each release the NVD names the build number in which a vulnerability is fixed). The data comes from the NVD bulk download; no inventory data is transmitted.'))
+    $tt.SetToolTip($cbVer,(G 'Prüft anhand der NVD (nvd.nist.gov), ob die installierte Version im verwundbaren Bereich liegt. Die NVD-Daten aller KEV-CVEs werden gesammelt geladen; es werden keine Inventardaten übertragen.' 'Checks against the NVD (nvd.nist.gov) whether the installed version is in the vulnerable range. The NVD data of all KEV CVEs is downloaded in bulk; no inventory data is transmitted.'))
     $tt.SetToolTip($tbKey,(G 'Optionaler, kostenloser Schlüssel von nvd.nist.gov: erhöht das Limit von 5 auf 50 Anfragen pro 30 Sekunden.' 'Optional, free key from nvd.nist.gov: raises the limit from 5 to 50 requests per 30 seconds.'))
     $tt.SetToolTip($cbCache,(G 'Nutzt zwischengespeicherte KEV-/NVD-Daten statt sie neu zu laden: schneller und ohne Internetzugriff, aber eventuell nicht mehr aktuell.' 'Uses cached KEV/NVD data instead of downloading it again: faster and without internet access, but possibly out of date.'))
     $tt.SetToolTip($cbIP,(G 'Ermittelt die öffentliche IP-Adresse über api.ipify.org bzw. ifconfig.me (Drittanbieter). Standardmäßig aus, damit keine Verbindung zu Dritten entsteht.' 'Determines the public IP address via api.ipify.org or ifconfig.me (third parties). Off by default, so that no connection to third parties is made.'))
@@ -1093,6 +1113,23 @@ function Show-CVEwatchGui {
                 if ($tok -eq 'reportpath') { $script:reportPath = $msg.Trim(); continue }
                 if ($tok -eq 'summary')    { $script:summaryLine = $msg }
                 if ($tok -eq 'done')       { continue }
+                if ($tok -eq 'nvdbulk') {   # NVD-Sammelabruf (ab 4.1): erste Hälfte der NVD-Stufe, Format geladen|gesamt|full/incr
+                    $pp = $msg -split '\|'
+                    if ($pp.Count -ge 3) {
+                        $script:nvdBulkSeen = $true
+                        $d = [int]$pp[0]; $tot = [int]$pp[1]; $incr = ($pp[2] -eq 'incr')
+                        $i0 = [array]::IndexOf($stageOrder,'nvd')
+                        if ($i0 -ge 0) {
+                            $lo = ($i0/$stageOrder.Count)*100; $hi = (($i0+1)/$stageOrder.Count)*100
+                            $f = if ($tot -gt 0) { [Math]::Min(1.0, $d/$tot) } else { 0.0 }
+                            Set-Progress ([Math]::Min(95,[int]($lo + ($hi-$lo)*0.5*$f)))
+                        }
+                        $status.Text = if ($incr) { (G 'NVD-Sammelabruf: hole Änderungen seit dem letzten Lauf ...' 'NVD bulk sync: fetching changes since the last run ...') }
+                                       elseif ($tot -gt 0) { (G "NVD-Sammelabruf: $d/$tot KEV-CVEs geladen (einmalig einige MB, danach nur noch Änderungen)" "NVD bulk sync: $d/$tot KEV CVEs loaded (a few MB once, afterwards only changes)") }
+                                       else { (G 'NVD-Sammelabruf: lade die NVD-Daten aller KEV-CVEs ...' 'NVD bulk sync: downloading the NVD data of all KEV CVEs ...') }
+                    }
+                    continue
+                }
                 if ($tok -eq 'nvdprog') {   # Feinfortschritt des NVD-Abgleichs: Balken + Statuszeile
                     $pp = $msg -split '\|'
                     if ($pp.Count -ge 3) {
@@ -1100,6 +1137,7 @@ function Show-CVEwatchGui {
                         $i0 = [array]::IndexOf($stageOrder,'nvd')
                         if ($i0 -ge 0 -and $tot -gt 0) {
                             $lo = ($i0/$stageOrder.Count)*100; $hi = (($i0+1)/$stageOrder.Count)*100
+                            if ($script:nvdBulkSeen) { $lo = $lo + ($hi-$lo)*0.5 }   # nach dem Sammelabruf: zweite Hälfte der Stufe (Balken springt nicht zurück)
                             Set-Progress ([Math]::Min(95,[int]($lo + ($hi-$lo)*($d/$tot))))
                         }
                         $etaTxt = if ($d -ge $tot) { (G 'fast fertig' 'almost done') } elseif ($eta -ge 60) { (G 'noch ca. {0} Min {1} s' 'about {0} min {1} s left') -f [int][math]::Floor($eta/60), ($eta % 60) } else { (G "noch ca. $eta s" "about $eta s left") }
@@ -1155,7 +1193,7 @@ function Show-CVEwatchGui {
         $btnStart.Enabled=$false; $btnLang.Enabled=$false; $btnStart.Text=(G 'Läuft ...' 'Running ...'); $logbox.Clear()
         foreach ($k in $stageOrder) { Set-Stage $k 'idle' }
         Set-Progress 0; $status.Text=(G 'Scan läuft ... (das Fenster bleibt bedienbar)' 'Scan running ... (the window stays responsive)'); $status.ForeColor=$cBlue
-        $script:reportPath=''; $script:lastCount=0; $script:finished=$false; $script:summaryLine=''
+        $script:reportPath=''; $script:lastCount=0; $script:finished=$false; $script:summaryLine=''; $script:nvdBulkSeen=$false
         try { '' | Out-File -LiteralPath $script:statusPath -Encoding UTF8 } catch {}
 
         $psArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$scriptPath`"",'-NoOpen','-StatusFile',"`"$($script:statusPath)`"",'-Lang',$script:Lang)
@@ -1177,7 +1215,7 @@ function Show-CVEwatchGui {
         try {
             $p.Start()|Out-Null
             $script:proc=$p; $timer.Start()
-            Add-Log (G 'Scan gestartet. Der NVD-Versionsabgleich kann beim ersten Mal einige Minuten dauern (Rate-Limit).' 'Scan started. The NVD version check can take a few minutes the first time (rate limit).') $cMut
+            Add-Log (G 'Scan gestartet. Beim ersten Lauf lädt der NVD-Abgleich einmalig die Daten aller KEV-CVEs (einige MB), danach nur noch Änderungen.' 'Scan started. On the first run the NVD check downloads the data of all KEV CVEs once (a few MB), afterwards only changes.') $cMut
         } catch {
             Add-Log ((G 'Konnte Scan-Prozess nicht starten: ' 'Could not start scan process: ') + $_.Exception.Message) $cRed
             $btnStart.Enabled=$true; $btnStart.Text=(G 'Scan starten' 'Start scan')
@@ -1254,8 +1292,13 @@ $KevCacheTtlHours = 24        # KEV wird täglich aktualisiert -> Cache 24h vorh
 $ResolveVersions = -not $NoVersionCheck          # per -NoVersionCheck abschaltbar
 # $NvdApiKey kommt aus dem param()-Block (optional) oder aus der Umgebungsvariable CVEWATCH_NVD_API_KEY (GUI)
 if (-not $NvdApiKey -and $env:CVEWATCH_NVD_API_KEY) { $NvdApiKey = $env:CVEWATCH_NVD_API_KEY }
-$NvdCache        = Join-Path $WorkRoot 'nvd_cpe_cache.json'
+$NvdCache        = Join-Path $WorkRoot 'nvd_cache_v2.json'      # ab 4.1 kompaktes Format (Feld c) -> eigener Dateiname, damit ältere Versionen ihn nicht falsch lesen
+$NvdCacheLegacy  = Join-Path $WorkRoot 'nvd_cpe_cache.json'     # Format bis 4.0.1 (Feld r); wird nur gelesen (einmalige Übernahme), nie geschrieben
 $NvdCacheTtlDays = 30         # CPE-Bereiche für bekannte CVEs sind stabil -> 30 Tage vorhalten
+$NvdSyncFile     = Join-Path $WorkRoot 'nvd_kev_sync.json'   # Stand des NVD-Sammelabrufs (lastSync / lastFull, UTC)
+$NvdBulk         = $true      # NVD-Daten aller KEV-CVEs gesammelt holen (cves/2.0?hasKev), danach nur Änderungen
+$NvdBulkPageSize = 500        # CVEs pro Seite beim Sammelabruf (NVD-Maximum 2000; kleinere Seiten = robuster gegen 503 und schneller in PS 5.1)
+$NvdBulkFullDays = 30         # spätestens nach so vielen Tagen komplett neu laden statt nur Änderungen (Hygiene)
 if ($NoNvdLimit -or $NvdMaxCves -le 0) { $NvdMaxCves = [int]::MaxValue }   # Limit echter NVD-Abfragen pro Lauf: Standard 150 (-NvdMaxCves); -NoNvdLimit = unbegrenzt (Cache-Treffer zählen nie)
 $script:NvdSkippedCves = @()   # CVEs, die wegen des Limits in diesem Lauf nicht gegen die NVD geprüft wurden
 $NvdStaleOkDays  = 120        # CPE-Bereiche von KEV-CVEs, die schon länger als so viele Tage im KEV stehen, dürfen auch ohne -UseCache aus dem Cache kommen (0 = immer frisch)
@@ -3103,13 +3146,14 @@ $ransomProducts = @($matchedArr | Where-Object HasRansom).Count
 
 $affectedCount = 0; $affectedProducts = 0; $VersionResolved = $false; $NvdReachable = $true
 if ($ResolveVersions -and $matchedArr.Count -gt 0) {
-    Emit 'nvd' (G "[*] Löse Versionsbereiche über die NVD auf (nur gematchte CVEs) ..." "[*] Resolving version ranges via the NVD (matched CVEs only) ...")
+    Emit 'nvd' (G "[*] Löse Versionsbereiche über die NVD auf ..." "[*] Resolving version ranges via the NVD ...")
     $VersionResolved = $true
 
     # persistenten CPE-Cache laden (Format: { CVE: { f:'yyyy-MM-dd', r:[...ranges...], s:CVSS-Score, sv:Schweregrad, sver:CVSS-Version } })
     $script:NvdCacheData = @{}
-    if (Test-Path $NvdCache) {
-        try { (Get-Content $NvdCache -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $script:NvdCacheData[$_.Name] = $_.Value } } catch {}
+    $cacheIn = if (Test-Path $NvdCache) { $NvdCache } elseif (Test-Path $NvdCacheLegacy) { $NvdCacheLegacy } else { $null }
+    if ($cacheIn) {
+        try { (Get-Content $cacheIn -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $script:NvdCacheData[$_.Name] = $_.Value } } catch {}
     }
     $script:NvdFailed = New-Object System.Collections.Generic.HashSet[string]
     $script:NvdFresh  = New-Object System.Collections.Generic.HashSet[string]   # in DIESEM Lauf frisch geholt (Memoisierung)
@@ -3122,8 +3166,147 @@ if ($ResolveVersions -and $matchedArr.Count -gt 0) {
         $staleLim = (Get-Date).AddDays(-$NvdStaleOkDays)
         foreach ($kv in $kev.vulnerabilities) { try { if ([datetime]$kv.dateAdded -lt $staleLim) { [void]$script:NvdStaleOk.Add([string]$kv.cveID) } } catch {} }
     }
+    # --- NVD-Antwort (vulnerabilities[i].cve) -> CPE-Bereiche + CVSS; gemeinsam für Einzel- und Sammelabruf ---
+    function ConvertFrom-NvdCve($CveObj) {
+        # Bereiche direkt im kompakten Textformat (siehe Get-NvdCacheRanges) - spart beim Sammelabruf zehntausende Objekte
+        $list = New-Object System.Collections.Generic.List[string]
+        foreach ($cfg in $CveObj.configurations) {
+            foreach ($node in $cfg.nodes) {
+                foreach ($cm in $node.cpeMatch) {
+                    if (-not $cm.vulnerable) { continue }
+                    $p = ($cm.criteria -split ':')
+                    $exact = if ($p.Count -ge 6 -and $p[5] -notin @('*','-')) { $p[5] } else { $null }
+                    $prod  = if ($p.Count -ge 5) { $p[4] } else { '' }
+                    $list.Add("$prod|$exact|$($cm.versionStartIncluding)|$($cm.versionStartExcluding)|$($cm.versionEndIncluding)|$($cm.versionEndExcluding)")
+                }
+            }
+        }
+        # CVSS-Basiswert + Schweregrad aus derselben Antwort (kein Zusatz-Request): v4.0 > v3.1 > v3.0 > v2, bevorzugt die NVD-eigene (Primary) Bewertung
+        $sc = $null; $sv = ''; $sver = ''
+        try {
+            $mt = $CveObj.metrics
+            foreach ($mk in 'cvssMetricV40','cvssMetricV31','cvssMetricV30','cvssMetricV2') {
+                $ml = @($mt.$mk | Where-Object { $_ })
+                if ($ml.Count -eq 0) { continue }
+                $pk = $ml | Where-Object { $_.type -eq 'Primary' } | Select-Object -First 1
+                if (-not $pk) { $pk = $ml[0] }
+                $sc = [double]$pk.cvssData.baseScore
+                $sv = if ($mk -eq 'cvssMetricV2') { "$($pk.baseSeverity)" } else { "$($pk.cvssData.baseSeverity)" }
+                $sver = if ($mk -eq 'cvssMetricV2') { '2.0' } else { "$($pk.cvssData.version)" }
+                break
+            }
+        } catch { $sc = $null }
+        [PSCustomObject]@{ C = $list.ToArray(); S = $sc; Sv = $sv; Sver = $sver }
+    }
+    # Kompaktes Cache-Format (Feld c): je Bereich 'Produkt|Exact|VSI|VSE|VEI|VEE' (Text statt Objekt -> schnelles JSON auch in PS 5.1).
+    # Get-NvdCacheRanges macht daraus wieder Objekte (Product/Exact/VSI/VSE/VEI/VEE), einmal pro CVE und Lauf.
+    $script:NvdExpanded = @{}
+    function Get-NvdCacheRanges([string]$cve) {
+        $e = $script:NvdCacheData[$cve]
+        if ($null -eq $e) { return $null }
+        if ($null -eq $e.c) { return $e.r }                       # altes Format (Objekte)
+        if (-not $script:NvdExpanded.ContainsKey($cve)) {
+            $script:NvdExpanded[$cve] = @(foreach ($t in @($e.c)) {
+                $q = ([string]$t).Split('|')
+                if ($q.Count -lt 6) { continue }
+                [PSCustomObject]@{
+                    Product = $q[0]
+                    Exact = $(if ($q[1]) { $q[1] } else { $null }); VSI = $(if ($q[2]) { $q[2] } else { $null }); VSE = $(if ($q[3]) { $q[3] } else { $null })
+                    VEI   = $(if ($q[4]) { $q[4] } else { $null }); VEE = $(if ($q[5]) { $q[5] } else { $null })
+                }
+            })
+        }
+        return $script:NvdExpanded[$cve]
+    }
+
+    # --- NVD-Sammelabruf: alle KEV-CVEs (hasKev) seitenweise, danach nur Änderungen (lastModStartDate/-EndDate, max. 120 Tage) ---
+    # Erfolg -> Einträge mit b=1 gelten als aktuell (kein Einzelabruf, kein Limit). Fehlschlag -> bisheriger Einzelabruf als Fallback.
+    # Der Sync-Stand wird erst zusammen mit dem Cache geschrieben (sonst gingen bei einem Abbruch Änderungen verloren).
+    $script:NvdBulkOk = $false; $script:NvdBulkSync = $null; $script:NvdLastSync = $null; $script:NvdLastFull = $null
+    if (Test-Path $NvdSyncFile) {
+        try {
+            $sj = Get-Content $NvdSyncFile -Raw | ConvertFrom-Json
+            $dts = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+            if ($sj.lastSync) { $script:NvdLastSync = [datetime]::Parse([string]$sj.lastSync, [Globalization.CultureInfo]::InvariantCulture, $dts) }
+            if ($sj.lastFull) { $script:NvdLastFull = [datetime]::Parse([string]$sj.lastFull, [Globalization.CultureInfo]::InvariantCulture, $dts) }
+        } catch { $script:NvdLastSync = $null; $script:NvdLastFull = $null }
+    }
+    function Sync-NvdKevBulk {
+        $nowUtc = [datetime]::UtcNow
+        $haveBulk = $false
+        foreach ($v in $script:NvdCacheData.Values) { if ($v.b) { $haveBulk = $true; break } }
+        $incr = ($haveBulk -and $script:NvdLastSync -and $script:NvdLastFull -and
+                 $script:NvdLastSync -le $nowUtc -and ($nowUtc - $script:NvdLastSync).TotalDays -lt 119 -and
+                 ($nowUtc - $script:NvdLastFull).TotalDays -lt $NvdBulkFullDays)
+        $inv = [Globalization.CultureInfo]::InvariantCulture; $fmt = 'yyyy-MM-ddTHH:mm:ss.fff'
+        $q = 'hasKev'
+        if ($incr) {   # 15 Minuten Überlappung gegen Uhr-/Verarbeitungsversatz
+            $q += ('&lastModStartDate=' + $script:NvdLastSync.AddMinutes(-15).ToString($fmt, $inv) + '%2B00:00' +
+                   '&lastModEndDate='   + $nowUtc.ToString($fmt, $inv) + '%2B00:00')
+        }
+        $base = "https://services.nvd.nist.gov/rest/json/cves/2.0?$q&resultsPerPage=$NvdBulkPageSize"
+        $headers = @{}; if ($NvdApiKey) { $headers['apiKey'] = $NvdApiKey }
+        if ($incr) {
+            Emit 'nvd' ((G "    NVD-Sammelabruf: nur Änderungen seit {0:yyyy-MM-dd HH:mm} UTC ..." "    NVD bulk sync: changes since {0:yyyy-MM-dd HH:mm} UTC only ...") -f $script:NvdLastSync) 'DarkGray'
+        } else {
+            Emit 'nvd' (G "    NVD-Sammelabruf: lade die NVD-Daten aller KEV-CVEs (einige MB, wenige Anfragen) ..." "    NVD bulk sync: downloading the NVD data of all KEV CVEs (a few MB, few requests) ...") 'DarkGray'
+        }
+        $today = (Get-Date).ToString('yyyy-MM-dd'); $start = 0; $total = -1; $got = 0
+        $mode = if ($incr) { 'incr' } else { 'full' }
+        if ($StatusFile) { try { "nvdbulk`t0|0|$mode" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 } catch {} }
+        while ($total -lt 0 -or $start -lt $total) {
+            $resp = $null
+            for ($attempt = 1; $attempt -le $NvdMaxAttempts; $attempt++) {
+                try {
+                    if ($start -gt 0 -and $attempt -eq 1) { Start-Sleep -Milliseconds $script:NvdDelayMs }   # Rate-Limit zwischen den Seiten
+                    $resp = Invoke-RestMethod -Uri "$base&startIndex=$start" -Headers $headers -TimeoutSec 180
+                    break
+                } catch {
+                    $code = 0; try { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } } catch {}
+                    if (-not $script:NvdFirstErr) { $script:NvdFirstErr = "$($_.Exception.Message)"; $script:NvdFirstErrCode = $code }
+                    if (($code -in @(400, 404)) -or ($attempt -ge $NvdMaxAttempts)) {
+                        $why = if ($code -gt 0) { "HTTP $code" } else { (G 'keine Antwort/Zeitüberschreitung' 'no answer/timeout') }
+                        Emit 'nvd' ((G "    NVD-Sammelabruf fehlgeschlagen ({0}) - weiter mit Einzelabfragen." "    NVD bulk sync failed ({0}) - continuing with individual requests.") -f $why) 'DarkYellow'
+                        return $false
+                    }
+                    $wait = [Math]::Min(60, [int]($script:NvdRetryBaseSec * [Math]::Pow(2, $attempt-1)))
+                    Start-Sleep -Seconds $wait
+                }
+            }
+            if ($null -eq $resp) { return $false }
+            $total = [int]$resp.totalResults
+            $page = @($resp.vulnerabilities)
+            foreach ($vv in $page) {
+                $id = [string]$vv.cve.id
+                if (-not $id) { continue }
+                $pc = ConvertFrom-NvdCve $vv.cve
+                $script:NvdCacheData[$id] = @{ f = $today; c = @($pc.C); s = $pc.S; sv = $pc.Sv; sver = $pc.Sver; b = 1 }
+                [void]$script:NvdExpanded.Remove($id)
+                $got++
+            }
+            if ($page.Count -eq 0) { break }
+            $start += $page.Count
+            if ($StatusFile) { try { "nvdbulk`t$([Math]::Min($start, $total))|$total|$mode" | Out-File -FilePath $StatusFile -Append -Encoding UTF8 } catch {} }
+            if ($total -gt $NvdBulkPageSize) { Emit 'nvd' ((G "    NVD-Sammelabruf: {0}/{1}" "    NVD bulk sync: {0}/{1}") -f [Math]::Min($start, $total), $total) 'DarkGray' }
+        }
+        if (-not $incr -and $got -eq 0) {   # Vollabruf ohne einen einzigen Eintrag ist unplausibel -> nicht als Erfolg werten
+            Emit 'nvd' (G "    NVD-Sammelabruf lieferte keine Daten - weiter mit Einzelabfragen." "    NVD bulk sync returned no data - continuing with individual requests.") 'DarkYellow'
+            return $false
+        }
+        $script:NvdBulkSync = @{ lastSync = $nowUtc.ToString('o'); lastFull = $(if ($incr) { $script:NvdLastFull.ToString('o') } else { $nowUtc.ToString('o') }) }
+        Emit 'nvd' ((G "    NVD-Sammelabruf: {0} CVEs {1}." "    NVD bulk sync: {0} CVEs {1}.") -f $got, $(if ($incr) { (G 'aktualisiert' 'updated') } else { (G 'geladen' 'loaded') })) 'DarkGray'
+        return $true
+    }
+    $script:NvdFirstErr = ''; $script:NvdFirstErrCode = 0
+    if ($NvdBulk -and -not $UseCache) { $script:NvdBulkOk = [bool](Sync-NvdKevBulk) }
+
     function Test-NvdCacheUsable([string]$cve) {
         if (-not $script:NvdCacheData.ContainsKey($cve)) { return $false }
+        $e0 = $script:NvdCacheData[$cve]
+        if ($e0.b) {
+            if ($script:NvdBulkOk) { return $true }                                   # in diesem Lauf per Sammelabruf abgeglichen
+            if ($UseCache -and $script:NvdLastSync -and (([datetime]::UtcNow - $script:NvdLastSync).TotalDays -lt $NvdCacheTtlDays)) { return $true }
+        }
         if (-not ($UseCache -or $script:NvdStaleOk.Contains($cve))) { return $false }
         $e = $script:NvdCacheData[$cve]
         try { return [bool]($e.f -and (((Get-Date) - [datetime]$e.f).TotalDays -lt $NvdCacheTtlDays)) } catch { return [bool]$UseCache }
@@ -3132,10 +3315,10 @@ if ($ResolveVersions -and $matchedArr.Count -gt 0) {
     function Get-NvdConfig([string]$cve) {
         # 1) schon in diesem Lauf geholt? -> immer wiederverwenden (kein Doppel-Request)
         if ($script:NvdCacheData.ContainsKey($cve) -and $script:NvdFresh.Contains($cve)) {
-            return $script:NvdCacheData[$cve].r
+            return (Get-NvdCacheRanges $cve)
         }
         # 2) Disk-Cache (frisch genug): mit -UseCache immer, sonst nur für länger bekannte KEV-CVEs (Standard = sonst frisch ziehen)
-        if (Test-NvdCacheUsable $cve) { return $script:NvdCacheData[$cve].r }
+        if (Test-NvdCacheUsable $cve) { return (Get-NvdCacheRanges $cve) }
         if ($script:NvdFailed.Contains($cve)) { return $null }
         $url = "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=$cve"
         # Bewusst KEIN eigener User-Agent: die NVD-WAF blockt Nicht-Browser-UAs gern
@@ -3146,40 +3329,11 @@ if ($ResolveVersions -and $matchedArr.Count -gt 0) {
             try {
                 if ($attempt -eq 1) { Start-Sleep -Milliseconds $script:NvdDelayMs }   # Grundabstand (Rate-Limit) nur vor dem 1. Versuch
                 $resp = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 25
-                $list = New-Object System.Collections.Generic.List[object]
-                foreach ($vv in $resp.vulnerabilities) {
-                    foreach ($cfg in $vv.cve.configurations) {
-                        foreach ($node in $cfg.nodes) {
-                            foreach ($cm in $node.cpeMatch) {
-                                if (-not $cm.vulnerable) { continue }
-                                $p = ($cm.criteria -split ':')
-                                $exact = if ($p.Count -ge 6 -and $p[5] -notin @('*','-')) { $p[5] } else { $null }
-                                $list.Add([PSCustomObject]@{
-                                    Product = if ($p.Count -ge 5) { $p[4] } else { '' }
-                                    Exact=$exact; VSI=$cm.versionStartIncluding; VSE=$cm.versionStartExcluding
-                                    VEI=$cm.versionEndIncluding; VEE=$cm.versionEndExcluding
-                                })
-                            }
-                        }
-                    }
-                }
-                $arr = $list.ToArray()
-                # CVSS-Basiswert + Schweregrad aus derselben Antwort (kein Zusatz-Request): v4.0 > v3.1 > v3.0 > v2, bevorzugt die NVD-eigene (Primary) Bewertung
-                $sc = $null; $sv = ''; $sver = ''
-                try {
-                    $mt = $resp.vulnerabilities[0].cve.metrics
-                    foreach ($mk in 'cvssMetricV40','cvssMetricV31','cvssMetricV30','cvssMetricV2') {
-                        $ml = @($mt.$mk | Where-Object { $_ })
-                        if ($ml.Count -eq 0) { continue }
-                        $pk = $ml | Where-Object { $_.type -eq 'Primary' } | Select-Object -First 1
-                        if (-not $pk) { $pk = $ml[0] }
-                        $sc = [double]$pk.cvssData.baseScore
-                        $sv = if ($mk -eq 'cvssMetricV2') { "$($pk.baseSeverity)" } else { "$($pk.cvssData.baseSeverity)" }
-                        $sver = if ($mk -eq 'cvssMetricV2') { '2.0' } else { "$($pk.cvssData.version)" }
-                        break
-                    }
-                } catch { $sc = $null }
-                $script:NvdCacheData[$cve] = @{ f = (Get-Date).ToString('yyyy-MM-dd'); r = $arr; s = $sc; sv = $sv; sver = $sver }
+                $vl = @($resp.vulnerabilities)
+                $pc = if ($vl.Count -gt 0) { ConvertFrom-NvdCve $vl[0].cve } else { [PSCustomObject]@{ C = @(); S = $null; Sv = ''; Sver = '' } }
+                $script:NvdCacheData[$cve] = @{ f = (Get-Date).ToString('yyyy-MM-dd'); c = @($pc.C); s = $pc.S; sv = $pc.Sv; sver = $pc.Sver }
+                [void]$script:NvdExpanded.Remove($cve)
+                $arr = @(Get-NvdCacheRanges $cve)
                 [void]$script:NvdFresh.Add($cve)
                 $script:NvdConsecFail = 0            # Circuit-Breaker: Erfolg setzt Zähler zurück
                 return $arr
@@ -3355,7 +3509,10 @@ if ($ResolveVersions -and $matchedArr.Count -gt 0) {
     $affectedProducts = @($matchedArr | Where-Object Affected).Count
 
     # Cache zurückschreiben (mit Zeitstempel je CVE)
-    try { $script:NvdCacheData | ConvertTo-Json -Depth 6 -Compress | Out-File $NvdCache -Encoding UTF8 } catch {}
+    $cacheSaved = $false
+    try { $script:NvdCacheData | ConvertTo-Json -Depth 6 -Compress | Out-File $NvdCache -Encoding UTF8; $cacheSaved = $true } catch {}
+    # Sync-Stand nur schreiben, wenn der Cache wirklich gespeichert ist (sonst würde der nächste Lauf Änderungen überspringen)
+    if ($cacheSaved -and $script:NvdBulkSync) { try { $script:NvdBulkSync | ConvertTo-Json -Compress | Out-File $NvdSyncFile -Encoding UTF8 } catch {} }
     Write-Host ((G "    Versionsabgleich: {0} Treffer konkret betroffen, {1} Produkte." "    Version check: {0} hits confirmed affected, {1} products.") -f $affectedCount, $affectedProducts) -ForegroundColor $(if($affectedCount){'Red'}else{'Green'})
 } else {
     foreach ($m in $matchedArr) { foreach ($h in $m.Hits) { $h | Add-Member -NotePropertyName VersionVerdict -NotePropertyValue 'nicht geprüft' -Force }; $m | Add-Member -NotePropertyName Affected -NotePropertyValue $false -Force }
@@ -3669,7 +3826,7 @@ if (-not $KevSkipped) {
     if ($UseCache) { $connList.Add((L 'KEV-Katalog und NVD-Daten: aus dem lokalen Zwischenspeicher (-UseCache), sofern vorhanden' 'KEV catalog and NVD data: from the local cache (-UseCache), if available')) }
     else {
         $connList.Add((L 'CISA (cisa.gov): Abruf des KEV-Katalogs' 'CISA (cisa.gov): download of the KEV catalog'))
-        if ($VersionResolved) { $connList.Add((L 'NIST NVD (nvd.nist.gov): Abruf von CVE-Details, übertragen werden nur CVE-Kennungen, keine Inventardaten' 'NIST NVD (nvd.nist.gov): download of CVE details, only CVE identifiers are transmitted, no inventory data')) }
+        if ($VersionResolved) { $connList.Add((L 'NIST NVD (nvd.nist.gov): Sammelabruf der Daten aller KEV-CVEs (für jedes Gerät gleich), Einzelabfragen nur per CVE-Kennung, keine Inventardaten' 'NIST NVD (nvd.nist.gov): bulk download of the data of all KEV CVEs (same for every device), individual requests only by CVE identifier, no inventory data')) }
     }
 }
 $ipHosts = (@($OutgoingIPSources | ForEach-Object { ([uri]$_).Host })) -join ' / '
