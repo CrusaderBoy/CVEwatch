@@ -16,6 +16,7 @@ Every release publishes a SHA-256 checksum. It is shown in **three independent p
 
 | Version | File | SHA-256 |
 |---|---|---|
+| 4.0.1 | `CVEwatchSCANme.ps1` | `34BEAF9C7320970E21DF762D26885C8FB41E1DA11D33AA6DE253886285802D35` |
 | 4.0 | `CVEwatchSCANme.ps1` | `5B2A21E5E998F94B30E0F3E6D20D0880773CB7BC95F035254556A5DFBB3EEA7E` |
 
 **Check it:**
@@ -98,6 +99,7 @@ Zu jedem Release wird eine SHA-256-Prüfsumme veröffentlicht. Sie steht an **dr
 
 | Version | Datei | SHA-256 |
 |---|---|---|
+| 4.0.1 | `CVEwatchSCANme.ps1` | `34BEAF9C7320970E21DF762D26885C8FB41E1DA11D33AA6DE253886285802D35` |
 | 4.0 | `CVEwatchSCANme.ps1` | `5B2A21E5E998F94B30E0F3E6D20D0880773CB7BC95F035254556A5DFBB3EEA7E` |
 
 **Prüfen:**
