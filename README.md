@@ -265,7 +265,7 @@ Reports are saved under `%USERPROFILE%\CVEwatch\assets\<computer name>\`.
 
 The first run can take a few minutes: without an API key the NVD only allows about 5 requests per 30 seconds. Following runs are much faster thanks to the cache.
 
-All parameters, exit codes and automation options: see [READMETECH.md](READMETECH.md). A walkthrough of the GUI and the report: see [READMEGUI.md](READMEGUI.md).
+All parameters, exit codes and automation options: see [READMETECH.md](docs/READMETECH.md). A walkthrough of the GUI and the report: see [READMEGUI.md](docs/READMEGUI.md).
 
 ---
 
