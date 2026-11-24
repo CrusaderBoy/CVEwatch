@@ -1,0 +1,19 @@
+AssetScanner Community License v1.0
+
+Erlaubt:
+- Private Nutzung
+- Interne Nutzung in Unternehmen und Organisationen
+- Studium des Quellcodes
+- Modifikation für den Eigenbedarf
+- Weitergabe nicht-kommerzieller Kopien
+
+Nicht erlaubt:
+- Verkauf der Software
+- Verkauf modifizierter Versionen
+- Angebot als kommerzieller Dienst (SaaS)
+- Reselling
+- Hosting für Dritte gegen Entgelt
+- kommerzielle Weiterverwertung ohne schriftliche Genehmigung
+
+Alle kommerziellen Nutzungsrechte verbleiben bei
+Christian Christiansen / Crusadersoft.
